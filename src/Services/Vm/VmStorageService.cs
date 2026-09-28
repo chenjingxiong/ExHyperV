@@ -1213,9 +1213,48 @@ namespace ExHyperV.Services
             return result.Success;
         }
 
+        // root\cimv2 的磁盘号快照——Storage 提供程序损坏的系统上 MSFT_Disk 查不到挂载盘号，
+        // 靠挂载前后 Win32_DiskDrive 差集兜底定位
+        private static async Task<HashSet<int>> GetPresentDiskNumbersAsync()
+        {
+            var resp = await WmiApi.QueryAsync(
+                "SELECT Index FROM Win32_DiskDrive",
+                obj => Convert.ToInt32(obj["Index"] ?? -1),
+                WmiScope.CimV2);
+            return resp.Success && resp.Data != null
+                ? resp.Data.Where(i => i >= 0).ToHashSet()
+                : new HashSet<int>();
+        }
+
+        private static async Task<int> FindNewlyPresentDiskAsync(HashSet<int> disksBefore)
+        {
+            var resp = await WmiApi.QueryAsync(
+                "SELECT Index, PNPDeviceID FROM Win32_DiskDrive",
+                obj => (Index: Convert.ToInt32(obj["Index"] ?? -1), PnpId: obj["PNPDeviceID"]?.ToString() ?? ""),
+                WmiScope.CimV2);
+            if (!resp.Success || resp.Data == null) return -1;
+
+            var added = resp.Data.Where(d => d.Index >= 0 && !disksBefore.Contains(d.Index)).ToList();
+            if (added.Count == 0) return -1;
+
+            // Hyper-V 挂载的 VHDX 以 SCSI 虚拟盘呈现；本流程窗口内恰好有其它新盘并入时优先选虚拟盘
+            int candidate = added[0].Index;
+            foreach (var d in added)
+            {
+                if (d.PnpId.Contains("PROD_VIRTUAL_DISK", StringComparison.OrdinalIgnoreCase))
+                {
+                    candidate = d.Index;
+                    break;
+                }
+            }
+            return candidate;
+        }
+
         public static async Task<(bool Success, int DiskNumber)> MountVhdxAsync(string imagePath)
         {
             await DismountVhdxAsync(imagePath);
+
+            var disksBefore = await GetPresentDiskNumbersAsync();
 
             var result = await WmiApi.InvokeAsync(
                 "SELECT * FROM Msvm_ImageManagementService",
@@ -1239,6 +1278,10 @@ namespace ExHyperV.Services
 
                 if (diskResp.HasData && diskResp.Data >= 0)
                     return (true, diskResp.Data);
+
+                int diffDisk = await FindNewlyPresentDiskAsync(disksBefore);
+                if (diffDisk >= 0)
+                    return (true, diffDisk);
 
                 await Task.Delay(500);
             }
@@ -1283,16 +1326,22 @@ namespace ExHyperV.Services
                 obj => obj,
                 WmiScope.Storage);
 
-            if (!partResp.HasData)
-                return (false, '\0');
+            if (partResp.HasData)
+            {
+                var result = await WmiApi.InvokeCimMethodAsync(
+                    partResp.Data!,
+                    "AddAccessPath",
+                    WmiScope.Storage,
+                    p => p["AccessPath"] = $"{driveLetter}:\\");
 
-            var result = await WmiApi.InvokeCimMethodAsync(
-                partResp.Data!,
-                "AddAccessPath",
-                WmiScope.Storage,
-                p => p["AccessPath"] = $"{driveLetter}:\\");
+                if (result.Success) return (true, driveLetter);
+            }
 
-            return result.Success ? (true, driveLetter) : (false, '\0');
+            // MSFT_Partition 查不到（Storage 提供程序损坏的系统返回空集）→ Win32 挂载点 API 兜底
+            if (await Task.Run(() => NativeVolumeMount.TryAssignDriveLetter(diskNumber, (uint)partitionNumber, driveLetter)))
+                return (true, driveLetter);
+
+            return (false, '\0');
         }
 
         public static async Task<bool> RemovePartitionAccessPathAsync(
@@ -1303,15 +1352,20 @@ namespace ExHyperV.Services
                 obj => obj,
                 WmiScope.Storage);
 
-            if (!partResp.HasData) return true;
+            if (partResp.HasData)
+            {
+                var result = await WmiApi.InvokeCimMethodAsync(
+                    partResp.Data!,
+                    "RemoveAccessPath",
+                    WmiScope.Storage,
+                    p => p["AccessPath"] = $"{driveLetter}:\\");
 
-            var result = await WmiApi.InvokeCimMethodAsync(
-                partResp.Data!,
-                "RemoveAccessPath",
-                WmiScope.Storage,
-                p => p["AccessPath"] = $"{driveLetter}:\\");
+                if (result.Success) return true;
+            }
 
-            return result.Success;
+            // MSFT_Partition 查不到（Storage 提供程序损坏的系统返回空集）→ Win32 挂载点 API 兜底。
+            // 挂载点本就不存在时 DeleteVolumeMountPoint 失败，视为已清理成功。
+            return NativeVolumeMount.RemoveDriveLetter(driveLetter) || !Directory.Exists($"{driveLetter}:\\");
         }
 
         public static async Task RemoveAllPartitionAccessPathsAsync(int diskNumber)

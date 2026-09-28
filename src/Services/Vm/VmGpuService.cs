@@ -560,7 +560,11 @@ namespace ExHyperV.Services
                     obj => obj["FileSystem"]?.ToString() ?? "",
                     WmiScope.Storage);
 
-                if (volResp.HasData && string.IsNullOrWhiteSpace(volResp.Data))
+                // MSFT_Volume 查不到（Storage 提供程序损坏的系统返回空集）→ 原生 GetVolumeInformation 兜底：
+                // BitLocker 锁定卷拿不到文件系统名，与 FileSystem 为空的判定等价
+                if (volResp.HasData
+                        ? string.IsNullOrWhiteSpace(volResp.Data)
+                        : string.IsNullOrWhiteSpace(NativeVolumeMount.TryGetFileSystemName(assignedDriveLetter[0])))
                     return Properties.Resources.Error_Gpu_BitLocker;
 
 
