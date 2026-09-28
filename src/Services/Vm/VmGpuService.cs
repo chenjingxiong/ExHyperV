@@ -598,6 +598,7 @@ namespace ExHyperV.Services
                         {
                             string result = PatchNvidiaServiceRegistry(assignedDriveLetter, packagePlan);
                             PromoteNvidiaFiles(assignedDriveLetter);
+                            PatchGuestInfHardwareId(assignedDriveLetter, packagePlan, gpuInstancePath);
                             return result;
                         });
                         if (!string.Equals(nvidiaRegResult, "OK", StringComparison.Ordinal))
@@ -1713,6 +1714,76 @@ namespace ExHyperV.Services
             foreach (var file in directory.GetFiles())
             {
                 file.Attributes &= ~FileAttributes.ReadOnly;
+            }
+        }
+
+        // Hyper-V GPU-PV 在 Windows 客户机内以微软合成显示控制器呈现(PCI\VEN_1414&DEV_008E，
+        // 见客户机 HKLM\SYSTEM\...\Enum\PCI)，与宿主机显卡特征 ID(PCI\VEN_10DE&DEV_XXXX)不同；
+        // 定制/精简版 INF(如 FrankenDriver 只认 DEV_2420)不含合成 ID 时客户机 PnP 匹配失败、驱动装不上。
+        // 注入时在客户机副本 INF 的型号节里，把宿主机 DEV 匹配行克隆一份并替换为合成 ID。
+        // Latin1 逐字节读写保证不改动原文件编码；已含合成 ID 时跳过，重复注入幂等。
+        private static void PatchGuestInfHardwareId(
+            string assignedDriveLetter,
+            GpuDriverPackagePlan packagePlan,
+            string gpuInstancePath)
+        {
+            try
+            {
+                var devMatch = Regex.Match(gpuInstancePath ?? string.Empty, @"DEV_([0-9A-Fa-f]{4})");
+                if (!devMatch.Success) return;
+                string hostToken = $"PCI\\VEN_10DE&DEV_{devMatch.Groups[1].Value.ToUpperInvariant()}";
+                const string guestToken = @"PCI\VEN_1414&DEV_008E";
+
+                string packageDir = Path.Combine(
+                    assignedDriveLetter, "Windows", "System32", "HostDriverStore", "FileRepository",
+                    packagePlan.PrimaryPackageName);
+                if (!Directory.Exists(packageDir)) return;
+
+                foreach (string infPath in Directory.GetFiles(packageDir, "*.inf", SearchOption.TopDirectoryOnly))
+                {
+                    try
+                    {
+                        string content = File.ReadAllText(infPath, System.Text.Encoding.Latin1);
+                        if (content.Contains(guestToken, StringComparison.OrdinalIgnoreCase))
+                            continue;   // 已打过补丁
+
+                        var hostRegex = new Regex(Regex.Escape(hostToken) + @"[^,\s]*", RegexOptions.IgnoreCase);
+                        string[] lines = content.Split('\n');
+                        var output = new List<string>(lines.Length + 4);
+                        int patched = 0;
+
+                        foreach (string raw in lines)
+                        {
+                            output.Add(raw);
+                            string line = raw.TrimEnd('\r').TrimStart();
+                            if (line.StartsWith(";") || !hostRegex.IsMatch(line))
+                                continue;
+
+                            // 型号节匹配行(如 %key% = Section071, PCI\VEN_10DE&DEV_2420&SUBSYS_000010DE)
+                            // 克隆并替换硬件 ID；保留行尾 \r 与原文件一致
+                            string alias = hostRegex.Replace(raw.TrimEnd('\n').TrimEnd('\r'), guestToken);
+                            if (string.Equals(alias, raw.TrimEnd('\n').TrimEnd('\r'), StringComparison.Ordinal))
+                                continue;
+                            output.Add(raw.EndsWith("\r") ? alias + "\r" : alias);
+                            patched++;
+                        }
+
+                        if (patched == 0) continue;
+
+                        // CopyDriverRepositoryAsync 会给整个目录加只读，写入前先清掉
+                        File.SetAttributes(infPath, FileAttributes.Normal);
+                        File.WriteAllText(infPath, string.Join("\n", output), System.Text.Encoding.Latin1);
+                        Debug.WriteLine($"[GPU INF] {Path.GetFileName(infPath)}: added {patched} hw-id alias lines ({hostToken} -> {guestToken})");
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"[GPU INF] patch {infPath} failed: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[GPU INF] PatchGuestInfHardwareId failed: {ex.Message}");
             }
         }
 
