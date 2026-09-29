@@ -534,6 +534,8 @@ Known Compatibility:
 | Ubuntu 22.04 | 6.7+ | ✅ | ✅ | ✅ | ✅ | ✅ | Kisak PPA |
 | Ubuntu 24.04 | 6.8–6.x | ✅ | ✅ | ❌ | ❌ | ❌ | No graphics stack configured |
 | fnOS 1.1.23 | 6.12.18-trim | ✅ | ✅ | ❌ | ❌ | ❌ | No graphics stack configured |
+| Debian 12 | 6.1 | 🚧 | 🚧 | 🚧 | 🚧 | 🚧 | Repo Mesa, new script untested |
+| Debian 13 | 6.12 | 🚧 | 🚧 | 🚧 | 🚧 | 🚧 | Repo Mesa, Vulkan needs Mesa 24+ |
 
 ![Linux&Blender](https://github.com/Justsenger/ExHyperV/blob/main/img/Linux.png)
 

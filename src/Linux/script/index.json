@@ -1,5 +1,12 @@
 [
   {
+    "FileName": "Debian-12-13-Official.sh",
+    "Name": "Debian-12-13-Official",
+    "Description": "Debian 12/13: CUDA√ Mesa-d3d12√ (Vulkan 需 Mesa 24+)",
+    "Author": "chenjingxiong",
+    "Version": "1.0.0"
+  },
+  {
     "FileName": "Ubuntu-22.04-Official.sh",
     "Name": "Ubuntu-22.04-Official",
     "Description": "CUDA√Mesa√",
