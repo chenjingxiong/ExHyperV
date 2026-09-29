@@ -2253,6 +2253,9 @@
   <data name="VmGPUService_LogOnline" xml:space="preserve">
     <value>[在线] {0}</value>
   </data>
+  <data name="VmGPUService_LogLocal" xml:space="preserve">
+    <value>[本地] {0}</value>
+  </data>
   <data name="VmMemoryService_ErrReadConfig" xml:space="preserve">
     <value>读取内存配置时发生严重异常: {0}</value>
   </data>
@@ -3116,6 +3119,18 @@
   </data>
   <data name="Error_Gpu_MaxReboots" xml:space="preserve">
     <value>已达最大重启次数。</value>
+  </data>
+  <data name="Log_Gpu_UploadingScript" xml:space="preserve">
+    <value>正在上传本地脚本：{0}</value>
+  </data>
+  <data name="Log_Gpu_RootExec" xml:space="preserve">
+    <value>当前 SSH 用户为 root，直接执行部署脚本。</value>
+  </data>
+  <data name="Log_Gpu_SudoExec" xml:space="preserve">
+    <value>检测到 sudo，通过 sudo 提权执行部署脚本。</value>
+  </data>
+  <data name="Error_Gpu_NoSudo" xml:space="preserve">
+    <value>客户机未安装 sudo 且当前 SSH 用户不是 root，无法提权执行部署脚本。请在客户机内安装 sudo（apt install sudo，再 usermod -aG sudo 用户名）或改用 root 账户连接后重试。</value>
   </data>
   <data name="Error_Gpu_LinuxGeneric" xml:space="preserve">
     <value>错误：{0}</value>

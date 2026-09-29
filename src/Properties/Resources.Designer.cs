@@ -6231,6 +6231,15 @@ namespace ExHyperV.Properties {
                 return ResourceManager.GetString("VmGPUService_LogOnline", resourceCulture);
             }
         }
+
+        /// <summary>
+        ///   查找类似 [Local] {0} 的本地化字符串。
+        /// </summary>
+        public static string VmGPUService_LogLocal {
+            get {
+                return ResourceManager.GetString("VmGPUService_LogLocal", resourceCulture);
+            }
+        }
         
         /// <summary>
         ///   查找类似 Advanced settings application exception: {0} 的本地化字符串。
@@ -8637,6 +8646,42 @@ namespace ExHyperV.Properties {
         public static string Error_Gpu_ScriptNoSuccess {
             get {
                 return ResourceManager.GetString("Error_Gpu_ScriptNoSuccess", resourceCulture);
+            }
+        }
+
+        /// <summary>
+        ///   Looks up a localized string similar to The VM does not have sudo installed and the SSH user is not root, so the deployment script cannot be elevated. Install sudo inside the VM (apt install sudo, then usermod -aG sudo &lt;user&gt;) or connect as root, then retry..
+        /// </summary>
+        public static string Error_Gpu_NoSudo {
+            get {
+                return ResourceManager.GetString("Error_Gpu_NoSudo", resourceCulture);
+            }
+        }
+
+        /// <summary>
+        ///   Looks up a localized string similar to Uploading local script: {0}.
+        /// </summary>
+        public static string Log_Gpu_UploadingScript {
+            get {
+                return ResourceManager.GetString("Log_Gpu_UploadingScript", resourceCulture);
+            }
+        }
+
+        /// <summary>
+        ///   Looks up a localized string similar to The SSH user is root; running the deployment script directly..
+        /// </summary>
+        public static string Log_Gpu_RootExec {
+            get {
+                return ResourceManager.GetString("Log_Gpu_RootExec", resourceCulture);
+            }
+        }
+
+        /// <summary>
+        ///   Looks up a localized string similar to sudo detected; running the deployment script with sudo elevation..
+        /// </summary>
+        public static string Log_Gpu_SudoExec {
+            get {
+                return ResourceManager.GetString("Log_Gpu_SudoExec", resourceCulture);
             }
         }
         /// <summary>

@@ -2253,6 +2253,9 @@ The existing NAT switch is: '{0}'</value>
   <data name="VmGPUService_LogOnline" xml:space="preserve">
     <value>[Online] {0}</value>
   </data>
+  <data name="VmGPUService_LogLocal" xml:space="preserve">
+    <value>[Local] {0}</value>
+  </data>
   <data name="VmMemoryService_ErrReadConfig" xml:space="preserve">
     <value>Critical exception occurred while reading memory config: {0}</value>
   </data>
@@ -3116,6 +3119,18 @@ The existing NAT switch is: '{0}'</value>
   </data>
   <data name="Error_Gpu_MaxReboots" xml:space="preserve">
     <value>Maximum reboot attempts reached.</value>
+  </data>
+  <data name="Log_Gpu_UploadingScript" xml:space="preserve">
+    <value>Uploading local script: {0}</value>
+  </data>
+  <data name="Log_Gpu_RootExec" xml:space="preserve">
+    <value>The SSH user is root; running the deployment script directly.</value>
+  </data>
+  <data name="Log_Gpu_SudoExec" xml:space="preserve">
+    <value>sudo detected; running the deployment script with sudo elevation.</value>
+  </data>
+  <data name="Error_Gpu_NoSudo" xml:space="preserve">
+    <value>The VM does not have sudo installed and the SSH user is not root, so the deployment script cannot be elevated. Install sudo inside the VM (apt install sudo, then usermod -aG sudo &lt;user&gt;) or connect as root, then retry.</value>
   </data>
   <data name="Error_Gpu_LinuxGeneric" xml:space="preserve">
     <value>Error: {0}</value>

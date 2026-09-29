@@ -2014,9 +2014,68 @@ namespace ExHyperV.Services
                 Debug.WriteLine($"Remote script index fetch failed: {ex.Message}");
             }
 
+            // 本地脚本目录（exe 旁 scripts/*.sh）：脚本未合入上游索引时也能部署，离线环境同样可用。
+            try
+            {
+                string localScriptDir = Path.Combine(AppContext.BaseDirectory, "scripts");
+                if (Directory.Exists(localScriptDir))
+                {
+                    var knownFileNames = new HashSet<string>(
+                        allScripts.Select(s => s.FileName), StringComparer.OrdinalIgnoreCase);
+                    foreach (string filePath in Directory.EnumerateFiles(localScriptDir, "*.sh"))
+                    {
+                        string fileName = Path.GetFileName(filePath);
+                        if (!knownFileNames.Add(fileName)) continue; // 与在线条目同名时保留在线版本
+
+                        var item = ParseLocalScriptHeader(filePath);
+                        if (item == null) continue;
+                        item.Name = string.Format(Properties.Resources.VmGPUService_LogLocal, item.Name);
+                        item.SourceUrl = filePath; // 本地路径：部署时走 SFTP 上传而非客户机内 wget
+                        allScripts.Add(item);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Local script scan failed: {ex.Message}");
+            }
+
             return allScripts
                 .OrderBy(x => x.Name)
                 .ToList();
+        }
+
+        /// <summary>解析本地脚本的 "# @Key: Value" 元数据头，缺失的字段回落到文件名。</summary>
+        private static LinuxScriptItem? ParseLocalScriptHeader(string filePath)
+        {
+            try
+            {
+                var item = new LinuxScriptItem
+                {
+                    FileName = Path.GetFileName(filePath),
+                    Name = Path.GetFileNameWithoutExtension(filePath)
+                };
+
+                // 元数据头集中在文件开头，读前 4KB 足够
+                using var reader = new StreamReader(filePath, System.Text.Encoding.UTF8);
+                char[] buffer = new char[4096];
+                int read = reader.Read(buffer, 0, buffer.Length);
+                string header = new string(buffer, 0, read);
+
+                foreach (Match m in Regex.Matches(header, @"^#\s*@(\w+)\s*:\s*(.+)$", RegexOptions.Multiline))
+                {
+                    string value = m.Groups[2].Value.Trim();
+                    switch (m.Groups[1].Value.ToUpperInvariant())
+                    {
+                        case "NAME": item.Name = value; break;
+                        case "DESCRIPTION": item.Description = value; break;
+                        case "AUTHOR": item.Author = value; break;
+                        case "VERSION": item.Version = value; break;
+                    }
+                }
+                return item;
+            }
+            catch { return null; }
         }
 
         // 支持重启循环的部署函数
@@ -2064,6 +2123,31 @@ namespace ExHyperV.Services
                         client.Disconnect();
                     }
 
+                    // 提权方式探测：root 直接执行；非 root 走 sudo。Debian 最小安装没有 sudo，
+                    // 旧实现硬编码 sudo 会在客户机里直接报 "sudo: 未找到命令" 并回滚整个部署。
+                    var probeResult = await SshService.ExecuteCommandAndCaptureOutputAsync(
+                        credentials,
+                        "echo PROBE_UID=$(id -u 2>/dev/null || echo -1); command -v sudo >/dev/null 2>&1 && echo PROBE_SUDO=1 || echo PROBE_SUDO=0",
+                        _ => { });
+                    bool sshIsRoot = Regex.IsMatch(probeResult.Output, @"PROBE_UID=0(\D|$)");
+                    bool sshHasSudo = Regex.IsMatch(probeResult.Output, @"PROBE_SUDO=1");
+
+                    string elevatePrefix;
+                    if (sshIsRoot)
+                    {
+                        Log(Properties.Resources.Log_Gpu_RootExec);
+                        elevatePrefix = string.Empty;
+                    }
+                    else if (sshHasSudo)
+                    {
+                        Log(Properties.Resources.Log_Gpu_SudoExec);
+                        elevatePrefix = $"echo '{credentials.Password.Replace("'", "'\\''")}' | sudo -S -E -p '' ";
+                    }
+                    else
+                    {
+                        return Properties.Resources.Error_Gpu_NoSudo;
+                    }
+
                     Log(Properties.Resources.Log_Gpu_UploadingDriverWsl);
                     GpuDriverPackagePlan packagePlan = await Task.Run(() =>
                         GpuDriverPackageResolver.Resolve(gpuInstancePath, gpuManufacturer));
@@ -2080,10 +2164,23 @@ namespace ExHyperV.Services
                         proxyEnv = $"http_proxy='{proxyUrl}' https_proxy='{proxyUrl}' HTTP_PROXY='{proxyUrl}' HTTPS_PROXY='{proxyUrl}' ";
                     }
 
-                    Log(string.Format(Properties.Resources.Log_Gpu_DownloadingScript, script.Name));
-                    string downloadCmd = $"{proxyEnv}sh -c \"wget -q -O {remoteScriptPath} {script.SourceUrl} || curl -fL {script.SourceUrl} -o {remoteScriptPath}\"";
+                    // 本地脚本（SourceUrl 为本机文件）经 SFTP 直传；在线脚本仍由客户机自行下载。
+                    // 上传前把 CRLF 规整为 LF：Windows 侧编辑过的脚本带着 \r 进 bash 会报 $'\r' 语法错误。
+                    if (File.Exists(script.SourceUrl))
+                    {
+                        Log(string.Format(Properties.Resources.Log_Gpu_UploadingScript, script.Name));
+                        string scriptText = await File.ReadAllTextAsync(script.SourceUrl);
+                        if (scriptText.Contains("\r\n"))
+                            scriptText = scriptText.Replace("\r\n", "\n");
+                        await SshService.WriteTextFileAsync(credentials, scriptText, remoteScriptPath);
+                    }
+                    else
+                    {
+                        Log(string.Format(Properties.Resources.Log_Gpu_DownloadingScript, script.Name));
+                        string downloadCmd = $"{proxyEnv}sh -c \"wget -q -O {remoteScriptPath} {script.SourceUrl} || curl -fL {script.SourceUrl} -o {remoteScriptPath}\"";
 
-                    await SshService.ExecuteSingleCommandAsync(credentials, downloadCmd, Log);
+                        await SshService.ExecuteSingleCommandAsync(credentials, downloadCmd, Log);
+                    }
                     await SshService.ExecuteSingleCommandAsync(credentials, $"chmod +x {remoteScriptPath}", Log);
                     bool isSuccess = false;
                     int maxAttempts = 3;
@@ -2097,7 +2194,7 @@ namespace ExHyperV.Services
                         // 代理地址单引号包裹 + 转义,防 ProxyHost 含 $()/反引号注入(与上面密码同款转义);正常主机名行为等价
                         string proxyArg = credentials.UseProxy ? $"'http://{credentials.ProxyHost.Replace("'", "'\\''")}:{credentials.ProxyPort}'" : "\"\"";
 
-                        string execCmd = $"echo '{credentials.Password.Replace("'", "'\\''")}' | sudo -S -E -p '' bash {remoteScriptPath} deploy {graphicsArg} {proxyArg}";
+                        string execCmd = $"{elevatePrefix}bash {remoteScriptPath} deploy {graphicsArg} {proxyArg}";
 
                         Log(string.Format(Properties.Resources.Log_Gpu_ExecutingAttempt, attempt));
 
