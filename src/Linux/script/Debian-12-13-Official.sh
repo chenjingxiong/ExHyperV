@@ -243,6 +243,21 @@ if ls "$LIB_DIR"/*.so* >/dev/null 2>&1; then
     cp -a "$LIB_DIR"/*.so* /usr/lib/wsl/lib/
 fi
 ln -sf /usr/lib/wsl/lib/libd3d12core.so /usr/lib/wsl/lib/libD3D12Core.so
+
+# NVML/CUDA 的 lxss 加载器 shim 会到 /usr/lib/wsl/drivers/<驱动包目录>/ 加载完整版
+# 用户态库(libnvidia-ml.so.1/libcuda.so.1.1/nvcubins.bin 等)，缺它则 nvidia-smi 报
+# Driver Not Loaded、cuInit 报 100。应用已把宿主机 DriverStore 上传到 drivers/，
+# 把其中含 WSL 库(.so)或 CUDA 二进制(nvcubins.bin)的驱动包目录整个拷过来。
+echo "[STEP: Deploying WSL Driver Libraries...]"
+mkdir -p /usr/lib/wsl/drivers
+if [ -d "$DEPLOY_DIR/drivers" ]; then
+    for pkg in "$DEPLOY_DIR/drivers"/*/; do
+        if ls "$pkg"*.so* >/dev/null 2>&1 || [ -f "$pkg/nvcubins.bin" ]; then
+            cp -a "$pkg" /usr/lib/wsl/drivers/
+        fi
+    done
+fi
+
 chmod -R 0555 /usr/lib/wsl
 chown -R root:root /usr/lib/wsl
 

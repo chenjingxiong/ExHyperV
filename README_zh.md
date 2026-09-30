@@ -526,8 +526,8 @@ $n="CheckMMIO_$(Get-Random)";New-VM $n -Gen 2 -NoVHD|Out-Null;Set-VM $n -Automat
 | Ubuntu 22.04 | 6.7+ | ✅ | ✅ | ✅ | ✅ | ✅ | Kisak PPA |
 | Ubuntu 24.04 | 6.8–6.x | ✅ | ✅ | ❌ | ❌ | ❌ | 无图形栈配置 |
 | fnOS 1.1.23 | 6.12.18-trim | ✅ | ✅ | ❌ | ❌ | ❌ | 无图形栈配置 |
-| Debian 12 | 6.1 | 🚧 | 🚧 | 🚧 | 🚧 | 🚧 | 仓库 Mesa，新脚本待实测 |
-| Debian 13 | 6.12 | 🚧 | 🚧 | 🚧 | 🚧 | 🚧 | 仓库 Mesa，Vulkan 需 Mesa 24+ |
+| Debian 12 | 6.1 | 🚧 | 🚧 | 🚧 | 🚧 | 🚧 | 仓库 Mesa，待实测 |
+| Debian 13 | 6.12 | ✅ | ✅ | 🚧 | 🚧 | ❌ | Win11 25H2 (26300) 宿主机实测通过；Mesa d3d12 已配置未实测 |
 
 ![Linux&Blender](https://github.com/Justsenger/ExHyperV/blob/main/img/Linux.png)
 
