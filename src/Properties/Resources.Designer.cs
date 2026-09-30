@@ -10226,6 +10226,11 @@ namespace ExHyperV.Properties {
         public static string VmImport_NetworkAdapter => ResourceManager.GetString("VmImport_NetworkAdapter", resourceCulture);
         public static string VmImport_ProcessorMemoryFormat => ResourceManager.GetString("VmImport_ProcessorMemoryFormat", resourceCulture);
         public static string VmImport_Settings => ResourceManager.GetString("VmImport_Settings", resourceCulture);
+        public static string VmImport_CustomDirectory => ResourceManager.GetString("VmImport_CustomDirectory", resourceCulture);
+        public static string VmImport_CustomDirectoryDescription => ResourceManager.GetString("VmImport_CustomDirectoryDescription", resourceCulture);
+        public static string VmImport_SelectTargetFolder => ResourceManager.GetString("VmImport_SelectTargetFolder", resourceCulture);
+        public static string VmImport_NameAutoSuffixed => ResourceManager.GetString("VmImport_NameAutoSuffixed", resourceCulture);
+        public static string VmImport_TargetOverlap => ResourceManager.GetString("VmImport_TargetOverlap", resourceCulture);
         public static string VmImport_GuidWillRegenerate => ResourceManager.GetString("VmImport_GuidWillRegenerate", resourceCulture);
         public static string VmImport_NewGuidOption => ResourceManager.GetString("VmImport_NewGuidOption", resourceCulture);
         public static string VmImport_OriginalMac => ResourceManager.GetString("VmImport_OriginalMac", resourceCulture);

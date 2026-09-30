@@ -22,6 +22,9 @@ public partial class VirtualMachinesPageViewModel
     [ObservableProperty] private string _vmImportSourcePath = string.Empty;
     [ObservableProperty] private VmImportSourceKind _vmImportSourceKind = VmImportSourceKind.Folder;
     [ObservableProperty] private bool _vmImportUsesExistingDirectory;
+    [ObservableProperty] private bool _vmImportUsesCustomDirectory;
+    [ObservableProperty] private bool _vmImportUsesHostDirectories = true;
+    [ObservableProperty] private string _vmImportCustomDirectoryPath = string.Empty;
     [ObservableProperty] private bool _isPreparingVmImport;
     [ObservableProperty] private bool _isExecutingVmImport;
     [ObservableProperty] private bool _isVmImportCompleted;
@@ -34,6 +37,7 @@ public partial class VirtualMachinesPageViewModel
     public bool CanPrepareVmImport => !IsPreparingVmImport
         && !IsExecutingVmImport
         && !string.IsNullOrWhiteSpace(VmImportSourcePath)
+        && (!VmImportUsesCustomDirectory || Directory.Exists(VmImportCustomDirectoryPath))
         && (VmImportSourceKind == VmImportSourceKind.Folder
             ? Directory.Exists(VmImportSourcePath)
             : File.Exists(VmImportSourcePath)
@@ -48,7 +52,7 @@ public partial class VirtualMachinesPageViewModel
     public bool CanLeaveVmImport => !IsPreparingVmImport && !IsExecutingVmImport;
 
     partial void OnVmImportSourcePathChanged(string value) => OnPropertyChanged(nameof(CanPrepareVmImport));
-    partial void OnVmImportSourceKindChanged(VmImportSourceKind value)
+    partial void OnVmImportCustomDirectoryPathChanged(string value) => OnPropertyChanged(nameof(CanPrepareVmImport));    partial void OnVmImportSourceKindChanged(VmImportSourceKind value)
     {
         OnPropertyChanged(nameof(IsImportFolderSource));
         OnPropertyChanged(nameof(CanPrepareVmImport));
@@ -59,6 +63,11 @@ public partial class VirtualMachinesPageViewModel
             : File.Exists(VmImportSourcePath)
               && string.Equals(Path.GetExtension(VmImportSourcePath), ".zip", StringComparison.OrdinalIgnoreCase);
         if (!sourceStillMatches) VmImportSourcePath = string.Empty;
+    }
+    partial void OnVmImportUsesCustomDirectoryChanged(bool value)
+    {
+        if (value) VmImportUsesExistingDirectory = false;
+        OnPropertyChanged(nameof(CanPrepareVmImport));
     }
     partial void OnIsPreparingVmImportChanged(bool value)
     {
@@ -99,6 +108,9 @@ public partial class VirtualMachinesPageViewModel
             IsVmImportCompleted = false;
             VmImportSourceKind = VmImportSourceKind.Folder;
             VmImportUsesExistingDirectory = false;
+            VmImportUsesCustomDirectory = false;
+            VmImportUsesHostDirectories = true;
+            VmImportCustomDirectoryPath = string.Empty;
             VmImportSourcePath = string.Empty;
             VmImportProgress = 0;
             VmImportStatusText = string.Empty;
@@ -139,13 +151,12 @@ public partial class VirtualMachinesPageViewModel
     }
 
     [RelayCommand]
-    private void SelectVmImportHostDirectories() => VmImportUsesExistingDirectory = false;
-
-    [RelayCommand]
-    private void SelectVmImportExistingDirectory()
+    private void BrowseVmImportCustomDirectory()
     {
-        if (VmImportSourceKind == VmImportSourceKind.Folder)
-            VmImportUsesExistingDirectory = true;
+        string? selected = Dialogs.PickFolder(Resources.VmImport_SelectTargetFolder,
+            Directory.Exists(VmImportCustomDirectoryPath) ? VmImportCustomDirectoryPath : null);
+        if (selected == null) return;
+        VmImportCustomDirectoryPath = selected;
     }
 
     [RelayCommand]
@@ -157,9 +168,12 @@ public partial class VirtualMachinesPageViewModel
         VmImportStatusText = Resources.VmImport_PreparingPreview;
         try
         {
-            VmImportPlacementMode placement = VmImportUsesExistingDirectory
-                ? VmImportPlacementMode.ExistingDirectory
-                : VmImportPlacementMode.HostDirectories;
+            // 三张卡片由 ListView 单选机制互斥；ZIP 来源不支持“使用现有目录”。
+            VmImportPlacementMode placement = VmImportUsesCustomDirectory && !VmImportUsesExistingDirectory
+                ? VmImportPlacementMode.CustomDirectory
+                : VmImportUsesExistingDirectory && IsImportFolderSource
+                    ? VmImportPlacementMode.ExistingDirectory
+                    : VmImportPlacementMode.HostDirectories;
             var previewProgress = new Progress<(int Current, int Total)>(value =>
             {
                 VmImportStatusText = value.Total <= 1
@@ -169,7 +183,10 @@ public partial class VirtualMachinesPageViewModel
             var result = await VmImportService.PreparePreviewsAsync(
                 VmImportSourcePath,
                 placement,
-                previewProgress);
+                previewProgress,
+                customDirectory: VmImportUsesCustomDirectory
+                    ? VmImportCustomDirectoryPath
+                    : null);
             if (!result.Success || result.Data == null)
             {
                 ShowError(FriendlyError.CleanLines(result.Error));

@@ -32,6 +32,8 @@ public sealed class VmImportSession : IAsyncDisposable
     internal IReadOnlySet<string> AvailableSwitchIds { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     /// <summary>主机现有虚拟机占用的静态 MAC（12 位无分隔大写），用于导入时的冲突检测。</summary>
     public IReadOnlySet<string> HostStaticMacs { get; internal set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    /// <summary>主机现有虚拟机的数据根/磁盘清单，导入目标与之重叠时硬拒绝。</summary>
+    internal IReadOnlyList<HostVmGuardInfo> HostVmGuard { get; set; } = [];
     /// <summary>主机默认虚拟机/磁盘目录（仅“导入主机目录”模式），重命名后据此重算目标目录。</summary>
     internal (string DefaultVmPath, string DefaultVhdPath)? HostDefaultPaths { get; set; }
     /// <summary>准备阶段判定的固定问题（如找不到磁盘）；与用户编辑相关的动态问题分开维护，重算时合并。</summary>
@@ -56,6 +58,10 @@ public sealed class VmImportSession : IAsyncDisposable
         PlannedSystemPath = string.Empty;
     }
 }
+
+/// <summary>一台现有虚拟机的数据根与磁盘文件清单；导入目标与之重叠即硬拒绝，
+/// 保证导入（含失败清理）永远不可能触碰现有虚拟机的文件。</summary>
+internal sealed record HostVmGuardInfo(Guid VmId, string Name, IReadOnlyList<string> Roots, IReadOnlyList<string> Disks);
 
 public sealed class VmImportBatchSession : IAsyncDisposable
 {
@@ -158,7 +164,8 @@ public static class VmImportService
         string sourcePath,
         VmImportPlacementMode placementMode,
         IProgress<(int Current, int Total)>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? customDirectory = null)
     {
         VmImportBatchSession? batch = null;
         try
@@ -173,6 +180,11 @@ public static class VmImportService
 
             if (kind == VmImportSourceKind.Zip && placementMode == VmImportPlacementMode.ExistingDirectory)
                 return ApiResponse<VmImportBatchSession>.Fail("ZIP 来源只能导入主机目录。");
+            if (placementMode == VmImportPlacementMode.CustomDirectory)
+            {
+                if (string.IsNullOrWhiteSpace(customDirectory) || !Directory.Exists(customDirectory))
+                    return ApiResponse<VmImportBatchSession>.Fail("请选择有效的导入目标目录。");
+            }
 
             IReadOnlyList<SourceLayout> layouts;
             string? temporaryRoot = null;
@@ -195,6 +207,8 @@ public static class VmImportService
 
             HashSet<Guid> usedGuids = await GetUsedVmGuidsAsync();
             HashSet<string> hostStaticMacs = await GetHostStaticMacAddressesAsync(cancellationToken);
+            List<HostVmGuardInfo> hostVmGuard = await GetHostVmGuardInfoAsync(cancellationToken);
+            HashSet<string> usedVmNames = await GetUsedVmNamesAsync(cancellationToken);
             (string DefaultVmPath, string DefaultVhdPath)? hostPaths = placementMode == VmImportPlacementMode.HostDirectories
                 ? await VmCreateService.GetHostDefaultPathsAsync()
                 : null;
@@ -210,7 +224,10 @@ public static class VmImportService
                     layouts[index],
                     usedGuids,
                     hostStaticMacs,
+                    hostVmGuard,
+                    usedVmNames,
                     hostPaths,
+                    customDirectory,
                     cancellationToken);
                 sessions.Add(session);
                 batch.VirtualMachines = sessions;
@@ -238,7 +255,10 @@ public static class VmImportService
         SourceLayout layout,
         HashSet<Guid> usedGuids,
         IReadOnlySet<string> hostStaticMacs,
+        IReadOnlyList<HostVmGuardInfo> hostVmGuard,
+        HashSet<string> usedVmNames,
         (string DefaultVmPath, string DefaultVhdPath)? hostPaths,
+        string? customDirectory,
         CancellationToken cancellationToken)
     {
         VmcxPreviewData data = await ReadVmcxPreviewAsync(layout.MainConfigurationPath, cancellationToken);
@@ -252,16 +272,30 @@ public static class VmImportService
                 $"主机上已存在 GUID 为 {originalGuid:D} 的虚拟机。使用现有目录时不能更改虚拟机 GUID。");
         }
 
-        bool generateNewGuid = guidConflict && placementMode == VmImportPlacementMode.HostDirectories;
+        bool generateNewGuid = guidConflict && placementMode != VmImportPlacementMode.ExistingDirectory;
+
+        // 与现有虚拟机同名时自动派生新名称并以新虚拟机导入，而不是拒绝导入。
+        string name = data.Name;
+        string? nameHint = null;
+        if (placementMode != VmImportPlacementMode.ExistingDirectory
+            && usedVmNames.Contains(name.Trim()))
+        {
+            string renamed = MakeUniqueVmName(usedVmNames, name);
+            nameHint = string.Format(Properties.Resources.VmImport_NameAutoSuffixed, renamed);
+            name = renamed;
+            generateNewGuid = true;
+        }
+
         var preview = new VmImportPreview
         {
-            Name = data.Name,
+            Name = name,
             OriginalName = data.Name,
             OriginalGuid = originalGuid,
             // 预览展示来源配置中的 GUID。若发生冲突，真正的新 GUID 由 Hyper-V
             // 在用户点击“导入”后生成，不能在预览阶段伪造一个可能不一致的值。
             PlannedGuid = originalGuid,
             GenerateNewGuid = generateNewGuid,
+            Hint = nameHint,
             Generation = data.Generation,
             ConfigurationVersion = data.ConfigurationVersion,
             Created = data.Created,
@@ -307,12 +341,15 @@ public static class VmImportService
             ArchiveEntries = layout.ArchiveEntries,
             GenerateNewGuid = generateNewGuid,
             HostStaticMacs = hostStaticMacs,
+            HostVmGuard = hostVmGuard,
             HostDefaultPaths = hostPaths,
             Preview = preview
         };
 
         if (originalGuid != Guid.Empty)
             usedGuids.Add(originalGuid);
+        if (!string.IsNullOrWhiteSpace(name))
+            usedVmNames.Add(name.Trim());
 
         if (hostPaths.HasValue)
         {
@@ -322,6 +359,14 @@ public static class VmImportService
             session.TargetDiskRoot = string.IsNullOrWhiteSpace(hostPaths.Value.DefaultVhdPath)
                 ? session.TargetConfigurationRoot
                 : Path.GetFullPath(Path.Combine(hostPaths.Value.DefaultVhdPath, safeName));
+        }
+        else if (placementMode == VmImportPlacementMode.CustomDirectory
+                 && !string.IsNullOrWhiteSpace(customDirectory))
+        {
+            // 自定义目录：配置与磁盘都放进用户选择的目录本身，不再按名称分子目录。
+            string target = Path.GetFullPath(customDirectory.Trim());
+            session.TargetConfigurationRoot = target;
+            session.TargetDiskRoot = target;
         }
 
         await PopulateDiskPreviewsAsync(session, data.Disks, cancellationToken);
@@ -342,6 +387,29 @@ public static class VmImportService
             // 向导界面会拦截空名称；这里兜底，避免计划虚拟机沿用旧名而数据落入“Imported VM”目录。
             if (string.IsNullOrWhiteSpace(session.Preview.Name))
                 return ApiResponse<Guid>.Fail(Properties.Resources.VmImport_NameRequired);
+            // 与现有虚拟机同名时以新身份（自动改名 + 新 GUID）作为新虚拟机导入，而不是失败。
+            if (session.PlacementMode != VmImportPlacementMode.ExistingDirectory)
+            {
+                HashSet<string> usedNames = await GetUsedVmNamesAsync(cancellationToken);
+                if (usedNames.Contains(session.Preview.Name.Trim()))
+                {
+                    string renamed = MakeUniqueVmName(usedNames, session.Preview.Name);
+                    session.Preview.Hint = string.Format(
+                        Properties.Resources.VmImport_NameAutoSuffixed, renamed);
+                    session.Preview.Name = renamed;
+                    session.GenerateNewGuid = true;
+                    session.Preview.GenerateNewGuid = true;
+                }
+            }
+            // 服务层硬闸：导入目标（含失败清理可能触碰的范围）绝不与现有虚拟机的数据根/磁盘重叠。
+            // 在任何文件操作之前执行，即使向导层被绕过也无法伤到现有虚拟机。
+            if (session.PlacementMode == VmImportPlacementMode.HostDirectories
+                || session.PlacementMode == VmImportPlacementMode.CustomDirectory)
+            {
+                string? overlap = FindTargetHostVmOverlap(session);
+                if (overlap != null)
+                    return ApiResponse<Guid>.Fail(overlap);
+            }
             if (session.SourceKind == VmImportSourceKind.Zip && !session.ArchiveFullyExtracted)
             {
                 await ExtractArchiveToTargetStagingAsync(session, progress, cancellationToken);
@@ -351,14 +419,14 @@ public static class VmImportService
 
             cancellationToken.ThrowIfCancellationRequested();
             // “使用现有目录”模式要求以原身份原地注册，不允许改 GUID；改名与 MAC 调整不受此限制。
-            session.GenerateNewGuid = session.PlacementMode == VmImportPlacementMode.HostDirectories
+            session.GenerateNewGuid = session.PlacementMode != VmImportPlacementMode.ExistingDirectory
                 && (session.GenerateNewGuid || session.Preview.GenerateNewGuid);
             await CreatePlannedSystemAsync(session, cancellationToken);
             await ApplyPlannedSystemIdentityAsync(session, cancellationToken);
             await ImportSnapshotDefinitionsAsync(session, cancellationToken);
             await DisconnectUnavailableNetworksAsync(session, cancellationToken);
 
-            if (session.PlacementMode == VmImportPlacementMode.HostDirectories)
+            if (session.PlacementMode != VmImportPlacementMode.ExistingDirectory)
             {
                 string configRoot = session.TargetConfigurationRoot;
                 string diskRoot = session.TargetDiskRoot;
@@ -367,14 +435,24 @@ public static class VmImportService
 
                 if (session.SourceKind != VmImportSourceKind.Zip)
                 {
-                    foreach (string root in new[] { configRoot, diskRoot }
-                                 .Distinct(StringComparer.OrdinalIgnoreCase))
-                        EnsureTargetAbsent(root);
+                    // 主机默认目录模式按名称新建子目录，必须为空；自定义目录允许复用
+                    // 已有文件夹，磁盘文件按 CreateNew 写入，冲突会自然报错。
+                    if (session.PlacementMode == VmImportPlacementMode.HostDirectories)
+                    {
+                        foreach (string root in new[] { configRoot, diskRoot }
+                                     .Distinct(StringComparer.OrdinalIgnoreCase))
+                            EnsureTargetAbsent(root);
+                    }
                     foreach (string root in new[] { configRoot, diskRoot }
                                  .Distinct(StringComparer.OrdinalIgnoreCase))
                     {
-                        Directory.CreateDirectory(root);
-                        createdPaths.Add(root);
+                        // 只把本次新建的目录记入 createdPaths：失败清理递归删除，
+                        // 绝不能波及导入前就存在的目录（哪怕它当时是空目录）。
+                        if (!Directory.Exists(root))
+                        {
+                            Directory.CreateDirectory(root);
+                            createdPaths.Add(root);
+                        }
                     }
                 }
                 else if (!Directory.Exists(configRoot) || !Directory.Exists(diskRoot))
@@ -559,6 +637,7 @@ public static class VmImportService
     {
         if (batch == null) return;
         bool hostDirectories = batch.PlacementMode == VmImportPlacementMode.HostDirectories;
+        bool customDirectory = batch.PlacementMode == VmImportPlacementMode.CustomDirectory;
         var sessions = batch.VirtualMachines;
 
         if (hostDirectories)
@@ -597,6 +676,14 @@ public static class VmImportService
                 }
             }
 
+            if (hostDirectories || customDirectory)
+            {
+                // 与现有虚拟机数据目录重叠是硬性禁区，向导里即时提示，导入入口还会再硬拦一次。
+                string? overlap = FindTargetHostVmOverlap(session);
+                if (overlap != null)
+                    issues.Add(overlap);
+            }
+
             foreach (VmImportNetworkPreview network in preview.Networks)
             {
                 if (network.IsCustomMacMissingOrInvalid)
@@ -624,7 +711,7 @@ public static class VmImportService
         {
             // 批量导入：多台虚拟机之间也不能落到同一目录 / 同一静态 MAC / 同一名称。
             foreach (IGrouping<string, VmImportSession> duplicate in sessions
-                         .Where(session => session.HostDefaultPaths.HasValue)
+                         .Where(session => !string.IsNullOrWhiteSpace(session.TargetConfigurationRoot))
                          .GroupBy(session => session.TargetConfigurationRoot, StringComparer.OrdinalIgnoreCase)
                          .Where(group => group.Count() > 1))
             {
@@ -1874,6 +1961,146 @@ public static class VmImportService
             total += read;
         }
         return buffer;
+    }
+
+    // 收集现有虚拟机的数据根（配置/检查点/分页）与磁盘文件，供导入目标重叠检查。
+    private static async Task<List<HostVmGuardInfo>> GetHostVmGuardInfoAsync(
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var settings = await WmiApi.QueryAsync(
+            "SELECT VirtualSystemIdentifier, ElementName, VirtualSystemType, ConfigurationID, " +
+            "ConfigurationDataRoot, SnapshotDataRoot, SwapFileDataRoot FROM Msvm_VirtualSystemSettingData",
+            obj => (
+                Id: obj["VirtualSystemIdentifier"]?.ToString() ?? string.Empty,
+                Name: obj["ElementName"]?.ToString() ?? string.Empty,
+                Type: obj["VirtualSystemType"]?.ToString() ?? string.Empty,
+                ConfigId: obj["ConfigurationID"]?.ToString() ?? string.Empty,
+                Roots: new[]
+                {
+                    obj["ConfigurationDataRoot"]?.ToString(),
+                    obj["SnapshotDataRoot"]?.ToString(),
+                    obj["SwapFileDataRoot"]?.ToString()
+                }));
+        if (!settings.Success)
+            throw new InvalidOperationException(settings.Error);
+
+        var diskAllocations = await WmiApi.QueryAsync(
+            "SELECT InstanceID, Parent, HostResource FROM Msvm_StorageAllocationSettingData " +
+            "WHERE ResourceSubType = 'Microsoft:Hyper-V:Virtual Hard Disk'",
+            obj => (
+                Id: obj["InstanceID"]?.ToString() ?? string.Empty,
+                Parent: obj["Parent"]?.ToString() ?? string.Empty,
+                Host: (obj["HostResource"] as string[])?.FirstOrDefault() ?? string.Empty));
+        if (!diskAllocations.Success)
+            throw new InvalidOperationException(diskAllocations.Error);
+
+        // 根目录只取已实体化的虚拟机；配置 ID 则收全（检查点差分盘的分配挂在快照 ID 上）。
+        var vmGuard = new Dictionary<Guid, (string Name, HashSet<string> Roots, HashSet<string> ConfigIds)>();
+        foreach (var item in settings.Data ?? [])
+        {
+            if (!Guid.TryParse(item.Id, out Guid vmId))
+                continue;
+            if (!vmGuard.TryGetValue(vmId, out var entry))
+                vmGuard[vmId] = entry = (item.Name, new HashSet<string>(StringComparer.OrdinalIgnoreCase), new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+            if (string.IsNullOrWhiteSpace(entry.Name) && !string.IsNullOrWhiteSpace(item.Name))
+                entry.Name = item.Name;
+            entry.ConfigIds.Add(item.ConfigId);
+            foreach (string? root in item.Roots)
+                if (!string.IsNullOrWhiteSpace(root))
+                    entry.Roots.Add(NormalizeGuardPath(root));
+        }
+
+        var result = new List<HostVmGuardInfo>();
+        foreach (var pair in vmGuard)
+        {
+            var ownDisks = (diskAllocations.Data ?? [])
+                .Where(allocation => !string.IsNullOrWhiteSpace(allocation.Host)
+                                     && DiskExtensions.Contains(
+                                         Path.GetExtension(allocation.Host),
+                                         StringComparer.OrdinalIgnoreCase)
+                                     && pair.Value.ConfigIds.Any(configId =>
+                                         configId.Length > 0
+                                         && (allocation.Id.Contains(configId, StringComparison.OrdinalIgnoreCase)
+                                             || allocation.Parent.Contains(configId, StringComparison.OrdinalIgnoreCase))))
+                .Select(allocation => NormalizeGuardPath(allocation.Host))
+                .ToList();
+            result.Add(new HostVmGuardInfo(pair.Key, pair.Value.Name, pair.Value.Roots.ToList(), ownDisks));
+        }
+        return result;
+    }
+
+    private static string NormalizeGuardPath(string path)
+        => Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+    // 主机上已注册虚拟机的显示名。Name 列是 GUID，只有真实虚拟机行能通过 Guid.TryParse 过滤，
+    // 避免把类定义行或宿主机本身算进去。
+    private static async Task<HashSet<string>> GetUsedVmNamesAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string className in new[] { "Msvm_ComputerSystem", "Msvm_PlannedComputerSystem" })
+        {
+            var query = await WmiApi.QueryAsync(
+                $"SELECT Name, ElementName FROM {className}",
+                obj => (Name: obj["Name"]?.ToString() ?? string.Empty,
+                        Element: obj["ElementName"]?.ToString() ?? string.Empty));
+            if (!query.Success)
+                throw new InvalidOperationException(query.Error);
+            foreach ((string Name, string Element) item in query.Data ?? [])
+            {
+                if (Guid.TryParse(item.Name, out _) && !string.IsNullOrWhiteSpace(item.Element))
+                    result.Add(item.Element.Trim());
+            }
+        }
+        return result;
+    }
+
+    /// <summary>派生一个主机上未占用的名称：“N”、“N (2)”、“N (3)”…同时避开批内已采用的名称。</summary>
+    private static string MakeUniqueVmName(HashSet<string> usedNames, string baseName)
+    {
+        string clean = SanitizeFileName(baseName.Trim());
+        if (clean.Length > 96) clean = clean[..96].TrimEnd();
+        if (!usedNames.Contains(clean)) return clean;
+        for (int suffix = 2; suffix < 1000; suffix++)
+        {
+            string candidate = $"{clean} ({suffix})";
+            if (!usedNames.Contains(candidate))
+                return candidate;
+        }
+        return clean + " (" + Guid.NewGuid().ToString("N")[..4] + ")";
+    }
+
+    private static bool IsWithinOrEqual(string path, string root)
+    {
+        string normalizedPath = Path.GetFullPath(path);
+        string normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return normalizedPath.Equals(normalizedRoot, StringComparison.OrdinalIgnoreCase)
+               || normalizedPath.StartsWith(
+                   normalizedRoot + Path.DirectorySeparatorChar,
+                   StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>导入目标与现有虚拟机的数据根/磁盘重叠时返回错误文案；无重叠返回 null。</summary>
+    private static string? FindTargetHostVmOverlap(VmImportSession session)
+    {
+        foreach (string target in new[] { session.TargetConfigurationRoot, session.TargetDiskRoot }
+                     .Where(path => !string.IsNullOrWhiteSpace(path))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (HostVmGuardInfo vm in session.HostVmGuard)
+            {
+                foreach (string path in vm.Roots.Concat(vm.Disks))
+                {
+                    if (IsWithinOrEqual(target, path) || IsWithinOrEqual(path, target))
+                        return string.Format(
+                            Properties.Resources.VmImport_TargetOverlap,
+                            string.IsNullOrWhiteSpace(vm.Name) ? vm.VmId.ToString("D") : vm.Name,
+                            target);
+                }
+            }
+        }
+        return null;
     }
 
     private static async Task<HashSet<string>> GetHostStaticMacAddressesAsync(

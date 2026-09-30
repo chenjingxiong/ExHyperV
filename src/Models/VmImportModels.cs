@@ -27,7 +27,9 @@ public enum VmImportMacMode
 public enum VmImportPlacementMode
 {
     HostDirectories,
-    ExistingDirectory
+    ExistingDirectory,
+    /// <summary>把配置与磁盘放进用户指定的目录。</summary>
+    CustomDirectory
 }
 
 public sealed class VmImportDiskPreview
@@ -201,6 +203,9 @@ public sealed class VmImportPreview : ObservableObject
     public ObservableCollection<VmImportNetworkPreview> Networks { get; init; } = new();
     public ObservableCollection<VmImportCheckpointPreview> Checkpoints { get; init; } = new();
     public ObservableCollection<string> CompatibilityIssues { get; init; } = new();
+
+    /// <summary>非阻断提示（如“与现有虚拟机重名，已自动改名/换新 GUID 导入”）。</summary>
+    public string? Hint { get; set; }
 
     public string MemoryText => string.Format(
         Resources.Culture ?? CultureInfo.CurrentUICulture,

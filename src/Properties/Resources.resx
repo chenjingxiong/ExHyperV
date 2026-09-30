@@ -3950,6 +3950,11 @@ Remove them from storage and retry? Cancel to re-plug the device and try again.<
   <data name="VmImport_NetworkAdapter" xml:space="preserve"><value>Network adapter</value></data>
   <data name="VmImport_ProcessorMemoryFormat" xml:space="preserve"><value>{0} cores / {1:0.#} GB</value></data>
   <data name="VmImport_Settings" xml:space="preserve"><value>Import settings</value></data>
+  <data name="VmImport_CustomDirectory" xml:space="preserve"><value>Import to a chosen folder</value></data>
+  <data name="VmImport_CustomDirectoryDescription" xml:space="preserve"><value>Place the configuration and virtual disks into the folder you select.</value></data>
+  <data name="VmImport_SelectTargetFolder" xml:space="preserve"><value>Select the import target folder</value></data>
+  <data name="VmImport_NameAutoSuffixed" xml:space="preserve"><value>Name already used by an existing virtual machine; importing as a new VM named "{0}" with a fresh identity.</value></data>
+  <data name="VmImport_TargetOverlap" xml:space="preserve"><value>The target directory "{1}" overlaps the data of existing virtual machine "{0}". Import refused to protect that virtual machine.</value></data>
   <data name="VmImport_GuidWillRegenerate" xml:space="preserve"><value>A new GUID will be generated</value></data>
   <data name="VmImport_NewGuidOption" xml:space="preserve"><value>Generate a new GUID (recommended for template clones)</value></data>
   <data name="VmImport_OriginalMac" xml:space="preserve"><value>Original MAC address</value></data>
