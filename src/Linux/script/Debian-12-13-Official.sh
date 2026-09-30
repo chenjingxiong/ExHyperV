@@ -162,7 +162,8 @@ else
     cat > "/usr/src/dxgkrnl-$VERSION/Makefile" <<'EOF'
 obj-m := dxgkrnl.o
 dxgkrnl-y := dxgmodule.o hmgr.o misc.o dxgadapter.o ioctl.o dxgvmbus.o dxgprocess.o dxgsyncfile.o
-ccflags-y := -I$(src)/include -D_MAIN_KERNEL_
+# Debian 6.12+ 头文件不再传递引入 linux/vmalloc.h，vzalloc/vmap/vfree 隐式声明导致编译失败，强制引入
+ccflags-y := -I$(src)/include -D_MAIN_KERNEL_ -include linux/vmalloc.h
 
 all:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
