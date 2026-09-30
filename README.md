@@ -536,6 +536,7 @@ Known Compatibility:
 | fnOS 1.1.23 | 6.12.18-trim | ✅ | ✅ | ❌ | ❌ | ❌ | No graphics stack configured |
 | Debian 12 | 6.1 | 🚧 | 🚧 | 🚧 | 🚧 | 🚧 | Repo Mesa, untested |
 | Debian 13 | 6.12 | ✅ | ✅ | 🚧 | 🚧 | ❌ | Verified on Win11 25H2 (26300) host; Mesa d3d12 configured but untested |
+| PVE 9.2 | 6.17 | ✅ | ✅ | ❌ | ❌ | ❌ | No graphics stack; verified on Win11 25H2 (26300) host |
 
 ![Linux&Blender](https://github.com/Justsenger/ExHyperV/blob/main/img/Linux.png)
 

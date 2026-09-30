@@ -528,6 +528,7 @@ $n="CheckMMIO_$(Get-Random)";New-VM $n -Gen 2 -NoVHD|Out-Null;Set-VM $n -Automat
 | fnOS 1.1.23 | 6.12.18-trim | ✅ | ✅ | ❌ | ❌ | ❌ | 无图形栈配置 |
 | Debian 12 | 6.1 | 🚧 | 🚧 | 🚧 | 🚧 | 🚧 | 仓库 Mesa，待实测 |
 | Debian 13 | 6.12 | ✅ | ✅ | 🚧 | 🚧 | ❌ | Win11 25H2 (26300) 宿主机实测通过；Mesa d3d12 已配置未实测 |
+| PVE 9.2 | 6.17 | ✅ | ✅ | ❌ | ❌ | ❌ | 无图形栈；Win11 25H2 (26300) 宿主机实测通过 |
 
 ![Linux&Blender](https://github.com/Justsenger/ExHyperV/blob/main/img/Linux.png)
 

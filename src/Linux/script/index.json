@@ -7,6 +7,13 @@
     "Version": "1.0.0"
   },
   {
+    "FileName": "PVE-9-Official.sh",
+    "Name": "PVE-9-Official",
+    "Description": "Proxmox VE 9.x: CUDA√ 无图形栈",
+    "Author": "chenjingxiong",
+    "Version": "1.0.0"
+  },
+  {
     "FileName": "Ubuntu-22.04-Official.sh",
     "Name": "Ubuntu-22.04-Official",
     "Description": "CUDA√Mesa√",
