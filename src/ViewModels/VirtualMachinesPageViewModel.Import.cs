@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.IO;
 using ExHyperV.Interaction;
 using ExHyperV.Models;
@@ -14,6 +15,7 @@ public partial class VirtualMachinesPageViewModel
 {
     private VmImportBatchSession? _vmImportBatchSession;
     private CancellationTokenSource? _vmImportCancellation;
+    private readonly List<INotifyPropertyChanged> _vmImportEditSubscriptions = new();
 
     [ObservableProperty] private bool _isVmImportViewVisible;
     [ObservableProperty] private int _vmImportStep;
@@ -179,6 +181,7 @@ public partial class VirtualMachinesPageViewModel
             foreach (VmImportSession session in result.Data.VirtualMachines)
                 VmImportPreviews.Add(session.Preview);
             VmImportPreview = VmImportPreviews.FirstOrDefault();
+            SubscribeVmImportEdits(result.Data);
             VmImportStep = 1;
         }
         finally
@@ -186,6 +189,42 @@ public partial class VirtualMachinesPageViewModel
             IsPreparingVmImport = false;
             VmImportStatusText = string.Empty;
         }
+    }
+
+    // 订阅向导中的编辑事件（名称、GUID 勾选、MAC 选项），任何改动都即时重算冲突。
+    // 重算只做文件系统检查与集合更新，代价很小，可以跟在每次按键后面同步执行。
+    private void SubscribeVmImportEdits(VmImportBatchSession batch)
+    {
+        UnsubscribeVmImportEdits();
+        foreach (VmImportSession session in batch.VirtualMachines)
+        {
+            Attach(session.Preview);
+            foreach (VmImportNetworkPreview network in session.Preview.Networks)
+                Attach(network);
+        }
+
+        void Attach(INotifyPropertyChanged source)
+        {
+            source.PropertyChanged += OnVmImportEditChanged;
+            _vmImportEditSubscriptions.Add(source);
+        }
+    }
+
+    private void UnsubscribeVmImportEdits()
+    {
+        foreach (INotifyPropertyChanged source in _vmImportEditSubscriptions)
+            source.PropertyChanged -= OnVmImportEditChanged;
+        _vmImportEditSubscriptions.Clear();
+    }
+
+    private void OnVmImportEditChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is not (nameof(VmImportPreview.Name)
+            or nameof(VmImportNetworkPreview.Mode)
+            or nameof(VmImportNetworkPreview.CustomMac)))
+            return;
+        VmImportService.ReevaluateImportIssues(_vmImportBatchSession);
+        OnPropertyChanged(nameof(CanStartVmImport));
     }
 
     [RelayCommand]
@@ -324,6 +363,7 @@ public partial class VirtualMachinesPageViewModel
 
     private async Task DisposeVmImportSessionAsync()
     {
+        UnsubscribeVmImportEdits();
         if (_vmImportBatchSession == null) return;
         await _vmImportBatchSession.DisposeAsync();
         _vmImportBatchSession = null;

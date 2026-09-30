@@ -30,6 +30,12 @@ public sealed class VmImportSession : IAsyncDisposable
     internal IReadOnlyDictionary<string, long>? ArchiveEntries { get; set; }
     internal IReadOnlyDictionary<string, string>? ExtractedArchivePaths { get; set; }
     internal IReadOnlySet<string> AvailableSwitchIds { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    /// <summary>主机现有虚拟机占用的静态 MAC（12 位无分隔大写），用于导入时的冲突检测。</summary>
+    public IReadOnlySet<string> HostStaticMacs { get; internal set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    /// <summary>主机默认虚拟机/磁盘目录（仅“导入主机目录”模式），重命名后据此重算目标目录。</summary>
+    internal (string DefaultVmPath, string DefaultVhdPath)? HostDefaultPaths { get; set; }
+    /// <summary>准备阶段判定的固定问题（如找不到磁盘）；与用户编辑相关的动态问题分开维护，重算时合并。</summary>
+    internal List<string> StaticCompatibilityIssues { get; } = new();
     internal string TargetConfigurationRoot { get; set; } = string.Empty;
     internal string TargetDiskRoot { get; set; } = string.Empty;
     internal string? ConfigurationStagingRoot { get; set; }
@@ -78,6 +84,12 @@ public static class VmImportService
     private static readonly Regex VmcxDiskPathRegex = new(
         @"^/configuration/_[^/]+_/controller(?<controller>\d+)/drive(?<drive>\d+)/pathname$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex VmcxNicMacRegex = new(
+        @"^/configuration/_(?<device>[0-9a-fA-F-]{36})_/MacAddress$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex VmcxManifestInstanceRegex = new(
+        @"^/configuration/manifest/vdev(?<vdev>\d+)/instance$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private sealed record SourceLayout(
         string SourceRoot,
@@ -91,6 +103,14 @@ public static class VmImportService
     private sealed record DiskAllocation(string Path, string InstanceId, string HostResource, string Parent);
     private sealed record VhdMetadata(string Format, string Type, ulong VirtualSize, string? ParentPath);
     private sealed record VmcxDiskReference(string ConfiguredPath, string Controller);
+    /// <summary>VMCX 中的一块网卡：设备节点 GUID、显示名、MAC（12 位无分隔）与静态标志、所连交换机名。</summary>
+    private sealed record VmcxNetworkData(
+        string DeviceId,
+        string FriendlyName,
+        string Mac,
+        bool IsStatic,
+        string SwitchName,
+        bool IsConnected);
     private sealed record VmcxPreviewData(
         string Name,
         Guid Guid,
@@ -100,7 +120,8 @@ public static class VmImportService
         string Notes,
         int ProcessorCount,
         ulong StartupMemoryMb,
-        IReadOnlyList<VmcxDiskReference> Disks);
+        IReadOnlyList<VmcxDiskReference> Disks,
+        IReadOnlyList<VmcxNetworkData> Networks);
 
     private sealed class ZipCrc32
     {
@@ -173,6 +194,7 @@ public static class VmImportService
             };
 
             HashSet<Guid> usedGuids = await GetUsedVmGuidsAsync();
+            HashSet<string> hostStaticMacs = await GetHostStaticMacAddressesAsync(cancellationToken);
             (string DefaultVmPath, string DefaultVhdPath)? hostPaths = placementMode == VmImportPlacementMode.HostDirectories
                 ? await VmCreateService.GetHostDefaultPathsAsync()
                 : null;
@@ -187,13 +209,14 @@ public static class VmImportService
                     placementMode,
                     layouts[index],
                     usedGuids,
+                    hostStaticMacs,
                     hostPaths,
                     cancellationToken);
                 sessions.Add(session);
                 batch.VirtualMachines = sessions;
             }
 
-            AddBatchTargetConflicts(sessions, placementMode);
+            ReevaluateImportIssues(batch);
             return ApiResponse<VmImportBatchSession>.Ok(batch);
         }
         catch (OperationCanceledException ex)
@@ -214,6 +237,7 @@ public static class VmImportService
         VmImportPlacementMode placementMode,
         SourceLayout layout,
         HashSet<Guid> usedGuids,
+        IReadOnlySet<string> hostStaticMacs,
         (string DefaultVmPath, string DefaultVhdPath)? hostPaths,
         CancellationToken cancellationToken)
     {
@@ -232,10 +256,12 @@ public static class VmImportService
         var preview = new VmImportPreview
         {
             Name = data.Name,
+            OriginalName = data.Name,
             OriginalGuid = originalGuid,
             // 预览展示来源配置中的 GUID。若发生冲突，真正的新 GUID 由 Hyper-V
             // 在用户点击“导入”后生成，不能在预览阶段伪造一个可能不一致的值。
             PlannedGuid = originalGuid,
+            GenerateNewGuid = generateNewGuid,
             Generation = data.Generation,
             ConfigurationVersion = data.ConfigurationVersion,
             Created = data.Created,
@@ -244,6 +270,28 @@ public static class VmImportService
             ProcessorCount = data.ProcessorCount,
             StartupMemoryMb = data.StartupMemoryMb
         };
+        foreach (VmcxNetworkData network in data.Networks)
+        {
+            var item = new VmImportNetworkPreview
+            {
+                Name = network.FriendlyName,
+                DeviceId = network.DeviceId,
+                OriginalSwitchName = network.SwitchName,
+                IsConnected = network.IsConnected,
+                OriginalMac = network.Mac,
+                OriginalMacIsStatic = network.IsStatic
+            };
+            // 静态 MAC 与主机现有虚拟机冲突时默认改为动态，避免克隆后两台机器同抢一个 MAC。
+            if (network.IsStatic && hostStaticMacs.Contains(network.Mac))
+            {
+                item.Mode = VmImportMacMode.Dynamic;
+                item.Hint = string.Format(
+                    Properties.Resources.VmImport_MacConflictHint,
+                    MacAddress.Format(network.Mac));
+            }
+            preview.Networks.Add(item);
+        }
+
         var session = new VmImportSession
         {
             SourcePath = sourcePath,
@@ -258,6 +306,8 @@ public static class VmImportService
             MainConfigurationEntry = layout.MainConfigurationEntry,
             ArchiveEntries = layout.ArchiveEntries,
             GenerateNewGuid = generateNewGuid,
+            HostStaticMacs = hostStaticMacs,
+            HostDefaultPaths = hostPaths,
             Preview = preview
         };
 
@@ -272,15 +322,6 @@ public static class VmImportService
             session.TargetDiskRoot = string.IsNullOrWhiteSpace(hostPaths.Value.DefaultVhdPath)
                 ? session.TargetConfigurationRoot
                 : Path.GetFullPath(Path.Combine(hostPaths.Value.DefaultVhdPath, safeName));
-            foreach (string target in new[]
-                     {
-                         session.TargetConfigurationRoot,
-                         session.TargetDiskRoot
-                     }.Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                if (TargetHasConflict(target))
-                    preview.CompatibilityIssues.Add($"目标已存在：{target}");
-            }
         }
 
         await PopulateDiskPreviewsAsync(session, data.Disks, cancellationToken);
@@ -298,6 +339,9 @@ public static class VmImportService
         try
         {
             progress?.Report(2);
+            // 向导界面会拦截空名称；这里兜底，避免计划虚拟机沿用旧名而数据落入“Imported VM”目录。
+            if (string.IsNullOrWhiteSpace(session.Preview.Name))
+                return ApiResponse<Guid>.Fail(Properties.Resources.VmImport_NameRequired);
             if (session.SourceKind == VmImportSourceKind.Zip && !session.ArchiveFullyExtracted)
             {
                 await ExtractArchiveToTargetStagingAsync(session, progress, cancellationToken);
@@ -306,7 +350,11 @@ public static class VmImportService
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            // “使用现有目录”模式要求以原身份原地注册，不允许改 GUID；改名与 MAC 调整不受此限制。
+            session.GenerateNewGuid = session.PlacementMode == VmImportPlacementMode.HostDirectories
+                && (session.GenerateNewGuid || session.Preview.GenerateNewGuid);
             await CreatePlannedSystemAsync(session, cancellationToken);
+            await ApplyPlannedSystemIdentityAsync(session, cancellationToken);
             await ImportSnapshotDefinitionsAsync(session, cancellationToken);
             await DisconnectUnavailableNetworksAsync(session, cancellationToken);
 
@@ -502,21 +550,134 @@ public static class VmImportService
         }
     }
 
-    private static void AddBatchTargetConflicts(
-        IReadOnlyList<VmImportSession> sessions,
-        VmImportPlacementMode placementMode)
+    /// <summary>
+    /// 依据用户在导入向导中编辑的名称、MAC 选项重算动态冲突，并合并准备阶段的固定问题。
+    /// 名称变更会同步重算“导入主机目录”模式的目标目录。纯本地检查（文件系统 + 缓存的
+    /// 主机静态 MAC），可在 UI 线程随时调用。
+    /// </summary>
+    public static void ReevaluateImportIssues(VmImportBatchSession batch)
     {
-        if (placementMode != VmImportPlacementMode.HostDirectories || sessions.Count < 2)
-            return;
+        if (batch == null) return;
+        bool hostDirectories = batch.PlacementMode == VmImportPlacementMode.HostDirectories;
+        var sessions = batch.VirtualMachines;
 
-        foreach (IGrouping<string, VmImportSession> duplicate in sessions
-                     .GroupBy(session => SanitizeFileName(session.Preview.Name), StringComparer.OrdinalIgnoreCase)
-                     .Where(group => group.Count() > 1))
+        if (hostDirectories)
         {
-            string issue = $"多台虚拟机会写入同一主机目录：{duplicate.Key}";
-            foreach (VmImportSession session in duplicate)
-                session.Preview.CompatibilityIssues.Add(issue);
+            foreach (VmImportSession session in sessions)
+            {
+                if (!session.HostDefaultPaths.HasValue) continue;
+                string safeName = SanitizeFileName(session.Preview.Name);
+                session.TargetConfigurationRoot = Path.GetFullPath(
+                    Path.Combine(session.HostDefaultPaths.Value.DefaultVmPath, safeName));
+                session.TargetDiskRoot = string.IsNullOrWhiteSpace(session.HostDefaultPaths.Value.DefaultVhdPath)
+                    ? session.TargetConfigurationRoot
+                    : Path.GetFullPath(Path.Combine(session.HostDefaultPaths.Value.DefaultVhdPath, safeName));
+            }
         }
+
+        var issuesBySession = new List<KeyValuePair<VmImportSession, List<string>>>();
+        foreach (VmImportSession session in sessions)
+        {
+            var issues = new List<string>(session.StaticCompatibilityIssues);
+            VmImportPreview preview = session.Preview;
+            if (string.IsNullOrWhiteSpace(preview.Name))
+            {
+                issues.Add(Properties.Resources.VmImport_NameRequired);
+            }
+            else if (hostDirectories && session.HostDefaultPaths.HasValue)
+            {
+                foreach (string target in new[]
+                         {
+                             session.TargetConfigurationRoot,
+                             session.TargetDiskRoot
+                         }.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (TargetHasConflict(target))
+                        issues.Add($"目标已存在：{target}");
+                }
+            }
+
+            foreach (VmImportNetworkPreview network in preview.Networks)
+            {
+                if (network.IsCustomMacMissingOrInvalid)
+                {
+                    issues.Add(string.Format(
+                        Properties.Resources.VmImport_MacInvalid,
+                        network.Name,
+                        network.CustomMac));
+                    continue;
+                }
+
+                if (network.EffectiveStaticMac is string mac && session.HostStaticMacs.Contains(mac))
+                {
+                    issues.Add(string.Format(
+                        Properties.Resources.VmImport_MacConflict,
+                        MacAddress.Format(mac),
+                        network.Name));
+                }
+            }
+
+            issuesBySession.Add(new(session, issues));
+        }
+
+        if (sessions.Count >= 2)
+        {
+            // 批量导入：多台虚拟机之间也不能落到同一目录 / 同一静态 MAC / 同一名称。
+            foreach (IGrouping<string, VmImportSession> duplicate in sessions
+                         .Where(session => session.HostDefaultPaths.HasValue)
+                         .GroupBy(session => session.TargetConfigurationRoot, StringComparer.OrdinalIgnoreCase)
+                         .Where(group => group.Count() > 1))
+            {
+                AppendToAll(issuesBySession, duplicate, $"多台虚拟机会写入同一主机目录：{duplicate.Key}");
+            }
+
+            foreach (IGrouping<string, (VmImportSession Session, VmImportNetworkPreview Network)> duplicate in sessions
+                         .SelectMany(session => session.Preview.Networks
+                             .Select(network => (Session: session, Network: network)))
+                         .Where(item => item.Network.EffectiveStaticMac != null)
+                         .GroupBy(item => item.Network.EffectiveStaticMac!, StringComparer.OrdinalIgnoreCase)
+                         .Where(group => group.Count() > 1))
+            {
+                AppendToAll(issuesBySession, duplicate.Select(item => item.Session), string.Format(
+                    Properties.Resources.VmImport_MacBatchDuplicate,
+                    MacAddress.Format(duplicate.Key)));
+            }
+
+            foreach (IGrouping<string?, VmImportSession> duplicate in sessions
+                         .GroupBy(session => session.Preview.Name?.Trim(), StringComparer.OrdinalIgnoreCase)
+                         .Where(group => group.Count() > 1 && !string.IsNullOrEmpty(group.Key)))
+            {
+                AppendToAll(issuesBySession, duplicate, string.Format(
+                    Properties.Resources.VmImport_NameDuplicate,
+                    duplicate.Key));
+            }
+        }
+
+        foreach ((VmImportSession session, List<string> issues) in issuesBySession)
+            ReplaceIssues(session.Preview, issues);
+    }
+
+    private static void AppendToAll(
+        List<KeyValuePair<VmImportSession, List<string>>> issuesBySession,
+        IEnumerable<VmImportSession> targets,
+        string issue)
+    {
+        foreach (VmImportSession session in targets)
+        {
+            List<string>? issues = issuesBySession.FirstOrDefault(pair => ReferenceEquals(pair.Key, session)).Value;
+            if (issues != null && !issues.Contains(issue, StringComparer.Ordinal))
+                issues.Add(issue);
+        }
+    }
+
+    private static void ReplaceIssues(VmImportPreview preview, List<string> issues)
+    {
+        if (preview.CompatibilityIssues.Count == issues.Count
+            && preview.CompatibilityIssues.SequenceEqual(issues, StringComparer.Ordinal))
+            return;
+        preview.CompatibilityIssues.Clear();
+        foreach (string issue in issues)
+            preview.CompatibilityIssues.Add(issue);
     }
 
     private static Task<VmcxPreviewData> ReadVmcxPreviewAsync(
@@ -598,6 +759,49 @@ public static class VmImportService
                     $"{item.Match.Groups["controller"].Value}:{item.Match.Groups["drive"].Value}"))
                 .ToArray();
 
+            // 网卡：任何带 MacAddress 键的设备节点都是一块网卡（合成/旧版布局相同）。
+            // 顺序按 manifest 的 vdev 编号，保证与 Hyper-V 管理器展示一致。
+            var deviceOrder = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (VmcxNode node in values.Values)
+            {
+                Match manifest = VmcxManifestInstanceRegex.Match(node.Path);
+                if (manifest.Success)
+                    deviceOrder[(node.Value ?? "").Trim('{', '}').ToLowerInvariant()] =
+                        int.Parse(manifest.Groups["vdev"].Value);
+            }
+
+            VmcxNetworkData[] networks = values.Values
+                .Select(node => (Node: node, Match: VmcxNicMacRegex.Match(node.Path)))
+                .Where(item => item.Match.Success)
+                .Select(item =>
+                {
+                    string device = item.Match.Groups["device"].Value.ToLowerInvariant();
+                    string prefix = $"/configuration/_{device}_";
+                    bool isStatic = values.TryGetValue($"{prefix}/MacAddressIsStatic", out VmcxNode stat)
+                                    && string.Equals(stat.Value, "True", StringComparison.OrdinalIgnoreCase);
+                    string friendly = values.TryGetValue($"{prefix}/FriendlyName", out VmcxNode fn)
+                                      && !string.IsNullOrWhiteSpace(fn.Value)
+                        ? fn.Value
+                        : Properties.Resources.VmImport_NetworkAdapter;
+                    string switchName = values.TryGetValue($"{prefix}/Connection/AltSwitchName", out VmcxNode sw)
+                        ? sw.Value ?? string.Empty
+                        : string.Empty;
+                    bool connected = !values.TryGetValue($"{prefix}/IsConnected", out VmcxNode ic)
+                                     || !string.Equals(ic.Value, "False", StringComparison.OrdinalIgnoreCase);
+                    int order = deviceOrder.TryGetValue(device, out int vdev) ? vdev : int.MaxValue;
+                    return (Order: order, DeviceId: device, Data: new VmcxNetworkData(
+                        device,
+                        friendly,
+                        MacAddress.Normalize(item.Node.Value) ?? string.Empty,
+                        isStatic,
+                        switchName,
+                        connected));
+                })
+                .OrderBy(item => item.Order)
+                .ThenBy(item => item.DeviceId, StringComparer.Ordinal)
+                .Select(item => item.Data)
+                .ToArray();
+
             return new VmcxPreviewData(
                 name,
                 guid,
@@ -607,7 +811,8 @@ public static class VmImportService
                 ReadString("/configuration/properties/notes"),
                 checked((int)Math.Max(0, ReadInteger("/configuration/settings/processors/count"))),
                 checked((ulong)Math.Max(0, ReadInteger("/configuration/settings/memory/bank/size"))),
-                disks);
+                disks,
+                networks);
         }, cancellationToken);
     }
 
@@ -643,7 +848,7 @@ public static class VmImportService
                 if (!found || entry == null)
                 {
                     session.Preview.Disks.Add(CreateMissingDiskPreview(reference));
-                    session.Preview.CompatibilityIssues.Add(
+                    session.StaticCompatibilityIssues.Add(
                         $"找不到虚拟硬盘：{Path.GetFileName(reference.ConfiguredPath)}");
                     continue;
                 }
@@ -677,7 +882,7 @@ public static class VmImportService
             if (!File.Exists(sourcePath))
             {
                 session.Preview.Disks.Add(CreateMissingDiskPreview(reference));
-                session.Preview.CompatibilityIssues.Add(
+                session.StaticCompatibilityIssues.Add(
                     $"找不到虚拟硬盘：{Path.GetFileName(reference.ConfiguredPath)}");
                 continue;
             }
@@ -781,6 +986,89 @@ public static class VmImportService
         session.PlannedGuid = plannedGuid;
     }
 
+    // 将向导中的自定义设置（新名称、MAC 选项）落到计划虚拟机上。
+    // 计划虚拟机尚未注册，改名/改网卡设置都只影响本次导入结果，失败即中止导入。
+    private static async Task ApplyPlannedSystemIdentityAsync(
+        VmImportSession session,
+        CancellationToken cancellationToken)
+    {
+        string desiredName = session.Preview.Name?.Trim() ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(desiredName)
+            && !string.Equals(desiredName, session.Preview.OriginalName, StringComparison.Ordinal))
+        {
+            using var planned = new ManagementObject(session.PlannedSystemPath);
+            planned.Get();
+            using var settingsCollection = planned.GetRelated("Msvm_VirtualSystemSettingData");
+            using var settings = settingsCollection.Cast<ManagementObject>().FirstOrDefault(item =>
+                    string.Equals(item["VirtualSystemType"]?.ToString(),
+                        "Microsoft:Hyper-V:System:Planned", StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidDataException("计划虚拟机缺少主配置数据。");
+            if (!string.Equals(settings["ElementName"]?.ToString(), desiredName, StringComparison.Ordinal))
+            {
+                settings["ElementName"] = desiredName;
+                using var service = WmiApi.GetVirtualSystemManagementService();
+                var result = await WmiApi.InvokeOnObjectAsync(
+                    service,
+                    "ModifySystemSettings",
+                    p => p["SystemSettings"] = settings.GetText(TextFormat.CimDtd20),
+                    cancellationToken: cancellationToken);
+                if (!result.Success) throw new InvalidOperationException(result.Error);
+            }
+        }
+
+        List<VmImportNetworkPreview> macEdits = session.Preview.Networks
+            .Where(network => network.Mode != VmImportMacMode.KeepOriginal)
+            .ToList();
+        if (macEdits.Count == 0) return;
+
+        // VMCX 设备节点 GUID 对应 WMI 网卡 InstanceID 的第二段（合成两段、旧版三段），
+        // GenerateNewSystemIdentifier 只换虚拟机 GUID，设备 GUID 不变，可按它精确匹配。
+        string prefix = WmiApi.Escape(session.PlannedGuid.ToString("D"));
+        var ports = new List<(string InstanceId, string ObjectPath)>();
+        foreach (string portClass in new[]
+                 {
+                     "Msvm_SyntheticEthernetPortSettingData", "Msvm_EmulatedEthernetPortSettingData"
+                 })
+        {
+            // QueryAsync 会释放每行对象，这里只保留 InstanceID 与对象路径，修改时再重新连接。
+            var query = await WmiApi.QueryAsync(
+                $"SELECT * FROM {portClass} WHERE InstanceID LIKE 'Microsoft:{prefix}%'",
+                obj => (InstanceId: obj["InstanceID"]?.ToString() ?? string.Empty, ObjectPath: obj.Path.Path));
+            if (!query.Success)
+                throw new InvalidOperationException(query.Error);
+            ports.AddRange(query.Data ?? []);
+        }
+
+        using var macService = WmiApi.GetVirtualSystemManagementService();
+        foreach (VmImportNetworkPreview edit in macEdits)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            (string InstanceId, string ObjectPath)? match = ports.FirstOrDefault(item =>
+                ParsePlannedPortDeviceId(item.InstanceId)
+                    .Equals(edit.DeviceId, StringComparison.OrdinalIgnoreCase));
+            if (match == null) continue;
+            using var port = new ManagementObject(match.Value.ObjectPath);
+            port.Get();
+            bool toStatic = edit.Mode == VmImportMacMode.Custom;
+            port["StaticMacAddress"] = toStatic;
+            port["Address"] = toStatic ? edit.EffectiveStaticMac : null;
+            var modified = await WmiApi.InvokeOnObjectAsync(
+                macService,
+                "ModifyResourceSettings",
+                p => p["ResourceSettings"] = new[] { port.GetText(TextFormat.CimDtd20) },
+                cancellationToken: cancellationToken);
+            if (!modified.Success) throw new InvalidOperationException(modified.Error);
+            ports.Remove(match.Value);
+        }
+    }
+
+    /// <summary>从网卡 InstanceID（Microsoft:VMGUID\DeviceGuid[\0]）取设备 GUID 段。</summary>
+    private static string ParsePlannedPortDeviceId(string? instanceId)
+    {
+        string[] segments = (instanceId ?? string.Empty).Split('\\');
+        return segments.Length >= 2 ? segments[1] : string.Empty;
+    }
+
     private static async Task ImportSnapshotDefinitionsAsync(
         VmImportSession session,
         CancellationToken cancellationToken)
@@ -825,7 +1113,7 @@ public static class VmImportService
         using var service = WmiApi.GetVirtualSystemManagementService();
         foreach (var item in allocations.Data ?? [])
         {
-            string switchGuid = ExtractNameKey(item.Host);
+            string switchGuid = ExtractSwitchGuid(item.Host);
             if (string.IsNullOrWhiteSpace(switchGuid)
                 || session.AvailableSwitchIds.Contains(switchGuid))
                 continue;
@@ -1588,6 +1876,39 @@ public static class VmImportService
         return buffer;
     }
 
+    private static async Task<HashSet<string>> GetHostStaticMacAddressesAsync(
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string portClass in new[]
+                 {
+                     "Msvm_SyntheticEthernetPortSettingData", "Msvm_EmulatedEthernetPortSettingData"
+                 })
+        {
+            var query = await WmiApi.QueryAsync(
+                $"SELECT InstanceID, Address, StaticMacAddress FROM {portClass} WHERE StaticMacAddress = TRUE",
+                obj => (InstanceId: obj["InstanceID"]?.ToString() ?? string.Empty,
+                        Address: obj["Address"]?.ToString() ?? string.Empty));
+            if (!query.Success)
+                throw new InvalidOperationException(query.Error);
+            foreach ((string InstanceId, string Address) item in query.Data ?? [])
+            {
+                // 类定义行（Microsoft:Definition\...\Maximum 等）不带真实地址，按
+                // “VM GUID 段必须是 GUID”过滤，只保留每台虚拟机的网卡实例。
+                string[] segments = item.InstanceId.Split('\\');
+                if (segments.Length < 2
+                    || !Guid.TryParse(segments[0].Replace("Microsoft:", string.Empty, StringComparison.OrdinalIgnoreCase), out _)
+                    || !Guid.TryParse(segments[1], out _))
+                    continue;
+                if (MacAddress.Normalize(item.Address) is { Length: 12 } mac)
+                    result.Add(mac);
+            }
+        }
+
+        return result;
+    }
+
     private static async Task<HashSet<Guid>> GetUsedVmGuidsAsync()
     {
         var result = new HashSet<Guid>();
@@ -1777,10 +2098,14 @@ public static class VmImportService
         return destination;
     }
 
-    private static string ExtractNameKey(string path)
+    // HostResource 形如 \\主机\root\virtualization\v2:Msvm_VirtualEthernetSwitch.
+    // CreationClassName="Msvm_VirtualEthernetSwitch",Name="交换机GUID"。用正则匹配
+    // Name= 会先命中 CreationClassName 里的同名子串（导致所有网卡被误判为交换机
+    // 缺失而断开），因此按引号分段取倒数第二段，与 VmNetworkService 的解析一致。
+    private static string ExtractSwitchGuid(string? path)
     {
-        Match match = Regex.Match(path ?? string.Empty, "Name=\\\"([^\\\"]+)\\\"", RegexOptions.IgnoreCase);
-        return match.Success ? match.Groups[1].Value : string.Empty;
+        string[] segments = (path ?? string.Empty).Split('"');
+        return segments.Length >= 2 ? segments[^2] : string.Empty;
     }
 
     private static bool IsWithin(string path, string root)

@@ -3949,6 +3949,20 @@ Remove them from storage and retry? Cancel to re-plug the device and try again.<
   <data name="VmImport_DynamicMemoryFormat" xml:space="preserve"><value>{0:N0} MB ({1:N0}–{2:N0} MB)</value></data>
   <data name="VmImport_NetworkAdapter" xml:space="preserve"><value>Network adapter</value></data>
   <data name="VmImport_ProcessorMemoryFormat" xml:space="preserve"><value>{0} cores / {1:0.#} GB</value></data>
+  <data name="VmImport_Settings" xml:space="preserve"><value>Import settings</value></data>
+  <data name="VmImport_GuidWillRegenerate" xml:space="preserve"><value>A new GUID will be generated</value></data>
+  <data name="VmImport_NewGuidOption" xml:space="preserve"><value>Generate a new GUID (recommended for template clones)</value></data>
+  <data name="VmImport_OriginalMac" xml:space="preserve"><value>Original MAC address</value></data>
+  <data name="VmImport_MacModeKeep" xml:space="preserve"><value>Keep original MAC</value></data>
+  <data name="VmImport_MacModeDynamic" xml:space="preserve"><value>Dynamic MAC (auto-assigned)</value></data>
+  <data name="VmImport_MacModeCustom" xml:space="preserve"><value>Custom MAC</value></data>
+  <data name="VmImport_MacDynamicValue" xml:space="preserve"><value>Dynamic</value></data>
+  <data name="VmImport_MacConflict" xml:space="preserve"><value>MAC address {0} of network adapter "{1}" conflicts with an existing virtual machine.</value></data>
+  <data name="VmImport_MacConflictHint" xml:space="preserve"><value>Original MAC {0} is used by an existing virtual machine; switched to a dynamic MAC.</value></data>
+  <data name="VmImport_MacInvalid" xml:space="preserve"><value>Invalid MAC address "{1}" for network adapter "{0}"; expected 12 hexadecimal digits.</value></data>
+  <data name="VmImport_MacBatchDuplicate" xml:space="preserve"><value>Multiple virtual machines in this import would use the same MAC address {0}.</value></data>
+  <data name="VmImport_NameRequired" xml:space="preserve"><value>The virtual machine name cannot be empty.</value></data>
+  <data name="VmImport_NameDuplicate" xml:space="preserve"><value>Multiple virtual machines in this import share the same name: {0}</value></data>
   <data name="Network_Applying" xml:space="preserve"><value>Applying network configuration…</value></data>
   <data name="Network_StateUnknown" xml:space="preserve"><value>Unable to determine network state:</value></data>
   <data name="Network_UplinkConfigured" xml:space="preserve"><value>Upstream configured: {0}</value></data>

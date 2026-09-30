@@ -3949,6 +3949,20 @@
   <data name="VmImport_DynamicMemoryFormat" xml:space="preserve"><value>{0:N0} MB（{1:N0}–{2:N0} MB）</value></data>
   <data name="VmImport_NetworkAdapter" xml:space="preserve"><value>网络适配器</value></data>
   <data name="VmImport_ProcessorMemoryFormat" xml:space="preserve"><value>{0} 核 / {1:0.#} GB</value></data>
+  <data name="VmImport_Settings" xml:space="preserve"><value>导入设置</value></data>
+  <data name="VmImport_GuidWillRegenerate" xml:space="preserve"><value>将生成新的 GUID</value></data>
+  <data name="VmImport_NewGuidOption" xml:space="preserve"><value>生成新的 GUID（克隆模板建议勾选）</value></data>
+  <data name="VmImport_OriginalMac" xml:space="preserve"><value>原 MAC 地址</value></data>
+  <data name="VmImport_MacModeKeep" xml:space="preserve"><value>保留原 MAC</value></data>
+  <data name="VmImport_MacModeDynamic" xml:space="preserve"><value>动态 MAC（自动分配）</value></data>
+  <data name="VmImport_MacModeCustom" xml:space="preserve"><value>自定义 MAC</value></data>
+  <data name="VmImport_MacDynamicValue" xml:space="preserve"><value>动态分配</value></data>
+  <data name="VmImport_MacConflict" xml:space="preserve"><value>网卡“{1}”的 MAC 地址 {0} 与现有虚拟机冲突。</value></data>
+  <data name="VmImport_MacConflictHint" xml:space="preserve"><value>原 MAC {0} 已被现有虚拟机使用，已改用动态 MAC。</value></data>
+  <data name="VmImport_MacInvalid" xml:space="preserve"><value>网卡“{0}”的 MAC 地址“{1}”无效，应为 12 位十六进制。</value></data>
+  <data name="VmImport_MacBatchDuplicate" xml:space="preserve"><value>多台待导入虚拟机使用了同一 MAC 地址：{0}</value></data>
+  <data name="VmImport_NameRequired" xml:space="preserve"><value>虚拟机名称不能为空。</value></data>
+  <data name="VmImport_NameDuplicate" xml:space="preserve"><value>多台待导入虚拟机使用了同一名称：{0}</value></data>
   <data name="Network_Applying" xml:space="preserve"><value>正在应用网络配置…</value></data>
   <data name="Network_StateUnknown" xml:space="preserve"><value>无法确认网络状态：</value></data>
   <data name="Network_UplinkConfigured" xml:space="preserve"><value>已配置上游：{0}</value></data>
