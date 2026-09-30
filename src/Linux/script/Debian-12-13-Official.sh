@@ -179,7 +179,22 @@ AUTOINSTALL="yes"
 EOF
 
     dkms add -m dxgkrnl -v "$VERSION"
-    dkms build -m dxgkrnl -v "$VERSION" -k "$KERNEL"
+
+    log " -> Building dxgkrnl module for kernel $KERNEL ..."
+    if ! dkms build -m dxgkrnl -v "$VERSION" -k "$KERNEL"; then
+        # 把 make.log 尾部直接吐回部署控制台，方便远程定位编译错误
+        BUILD_LOG="/var/lib/dkms/dxgkrnl/$VERSION/build/make.log"
+        log " -> [ERROR] dkms build failed for kernel $KERNEL"
+        if [ -f "$BUILD_LOG" ]; then
+            log " -> ---- make.log (last 120 lines) ----"
+            tail -n 120 "$BUILD_LOG"
+            log " -> ---- end of make.log ----"
+        else
+            log " -> make.log not found at $BUILD_LOG"
+        fi
+        exit 1
+    fi
+
     dkms install -m dxgkrnl -v "$VERSION" -k "$KERNEL" --force
 fi
 
